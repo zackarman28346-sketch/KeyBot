@@ -8,26 +8,34 @@ import time
 import asyncio
 from aiohttp import web
 import os
+import traceback
 
-# ---- READ TOKEN ----
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-# ---- CONFIG ----
-ALLOWED_USERS = [1532081645774045257, 798192702804983849]  # Your user IDs
-GUILD_ID = 1533237721685032990  # Your server ID
+ALLOWED_USERS = [1532081645774045257, 798192702804983849]
+GUILD_ID = 1533237721685032990
 PORT = 8080
 
-# ---- DATABASE ----
-conn = sqlite3.connect('keys.db')
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS keys (
-    key TEXT PRIMARY KEY,
-    expires INTEGER,
-    used INTEGER DEFAULT 0
-)''')
-conn.commit()
+# ---- DATABASE with error handling ----
+def init_db():
+    try:
+        conn = sqlite3.connect('keys.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS keys (
+            key TEXT PRIMARY KEY,
+            expires INTEGER,
+            used INTEGER DEFAULT 0
+        )''')
+        conn.commit()
+        conn.close()
+        print("✅ Database initialized successfully.")
+    except Exception as e:
+        print(f"❌ Database init error: {e}")
+        traceback.print_exc()
+
+init_db()
 
 # ---- BOT SETUP ----
 intents = discord.Intents.default()
@@ -39,24 +47,37 @@ async def handle_root(request):
     return web.Response(text="KeyBot is alive! 🔑")
 
 async def handle_validate(request):
-    data = await request.json()
-    key = data.get('key')
-    if not key:
-        return web.json_response({'valid': False}, status=400)
-    c.execute('SELECT expires, used FROM keys WHERE key = ?', (key,))
-    row = c.fetchone()
-    if row and not row[1] and row[0] > int(time.time()):
-        # Uncomment for single-use keys
-        # c.execute('UPDATE keys SET used = 1 WHERE key = ?', (key,))
-        # conn.commit()
-        return web.json_response({'valid': True})
-    return web.json_response({'valid': False})
+    try:
+        data = await request.json()
+        key = data.get('key')
+        if not key:
+            return web.json_response({'valid': False}, status=400)
+
+        conn = sqlite3.connect('keys.db')
+        c = conn.cursor()
+        c.execute('SELECT expires, used FROM keys WHERE key = ?', (key,))
+        row = c.fetchone()
+        conn.close()
+
+        if row and not row[1] and row[0] > int(time.time()):
+            # Optional: mark as used (uncomment next lines)
+            # conn = sqlite3.connect('keys.db')
+            # c = conn.cursor()
+            # c.execute('UPDATE keys SET used = 1 WHERE key = ?', (key,))
+            # conn.commit()
+            # conn.close()
+            return web.json_response({'valid': True})
+        return web.json_response({'valid': False})
+    except Exception as e:
+        print(f"❌ Validation error: {e}")
+        traceback.print_exc()
+        return web.json_response({'valid': False}, status=500)
 
 app = web.Application()
-app.router.add_get('/', handle_root)           # <-- FIX: root route
+app.router.add_get('/', handle_root)
 app.router.add_post('/validate', handle_validate)
 
-# ---- SHARED KEY GENERATION LOGIC ----
+# ---- KEY GENERATION ----
 def generate_key(duration_str):
     duration_str = duration_str.lower()
     seconds = 0
@@ -73,12 +94,22 @@ def generate_key(duration_str):
 
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
     expires = 9999999999 if seconds == 0 else int(time.time()) + seconds
-    c.execute('INSERT INTO keys (key, expires) VALUES (?, ?)', (key, expires))
-    conn.commit()
+
+    try:
+        conn = sqlite3.connect('keys.db')
+        c = conn.cursor()
+        c.execute('INSERT INTO keys (key, expires) VALUES (?, ?)', (key, expires))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Insert error: {e}")
+        traceback.print_exc()
+        return None, None
+
     dur_str = "permanent" if seconds == 0 else duration_str
     return key, dur_str
 
-# ---- SLASH COMMAND: /genkey ----
+# ---- SLASH COMMAND ----
 @bot.tree.command(name='genkey', description='Generate a license key with expiration')
 @app_commands.describe(duration='Duration: 1d, 3d, 7d, 30d, 1y, perm')
 async def genkey_slash(interaction: discord.Interaction, duration: str = '7d'):
@@ -91,11 +122,11 @@ async def genkey_slash(interaction: discord.Interaction, duration: str = '7d'):
 
     key, dur_str = generate_key(duration)
     if not key:
-        await interaction.response.send_message("❌ Invalid duration. Use: 1d, 3d, 7d, 30d, 1y, perm", ephemeral=True)
+        await interaction.response.send_message("❌ Failed to generate key. Check logs.", ephemeral=True)
         return
     await interaction.response.send_message(f"✅ Key generated: `{key}` – expires in {dur_str}")
 
-# ---- FALLBACK PREFIX COMMAND: !genkey ----
+# ---- FALLBACK PREFIX COMMAND ----
 @bot.command(name='genkey')
 async def genkey_prefix(ctx, duration: str = '7d'):
     if ctx.guild.id != GUILD_ID:
@@ -107,11 +138,11 @@ async def genkey_prefix(ctx, duration: str = '7d'):
 
     key, dur_str = generate_key(duration)
     if not key:
-        await ctx.send("❌ Invalid duration. Use: 1d, 3d, 7d, 30d, 1y, perm")
+        await ctx.send("❌ Failed to generate key. Check logs.")
         return
     await ctx.send(f"✅ Key generated: `{key}` – expires in {dur_str}")
 
-# ---- SYNC COMMANDS ON STARTUP ----
+# ---- SYNC COMMANDS ----
 @bot.event
 async def on_ready():
     print(f"✅ Bot logged in as {bot.user}")
