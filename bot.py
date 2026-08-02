@@ -8,7 +8,7 @@ import asyncio
 from aiohttp import web
 import os
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv(MTUzMzU3MzUxNDQzMzQwMDg4Mw.G6Fw9z.9JEFRNoHhUzkVxSLKxTR6L6kJnQNohhy83Tlbw)
 ALLOWED_USERS = [1532081645774045257, 798192702804983849]  # Your user IDs
 GUILD_ID = 1533237721685032990  # Your server ID
 PORT = 8080
