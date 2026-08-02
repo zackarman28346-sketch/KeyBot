@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import sqlite3
 import random
 import string
@@ -33,7 +34,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-# ---- HTTP SERVER FOR VALIDATION ----
+# ---- HTTP SERVER FOR KEY VALIDATION ----
 async def handle_validate(request):
     data = await request.json()
     key = data.get('key')
@@ -42,7 +43,7 @@ async def handle_validate(request):
     c.execute('SELECT expires, used FROM keys WHERE key = ?', (key,))
     row = c.fetchone()
     if row and not row[1] and row[0] > int(time.time()):
-        # Uncomment next two lines for single‑use keys
+        # Uncomment for single-use keys
         # c.execute('UPDATE keys SET used = 1 WHERE key = ?', (key,))
         # conn.commit()
         return web.json_response({'valid': True})
@@ -51,16 +52,20 @@ async def handle_validate(request):
 app = web.Application()
 app.router.add_post('/validate', handle_validate)
 
-# ---- KEY GENERATION COMMAND ----
-@bot.command(name='genkey')
-async def genkey(ctx, duration: str = '7d'):
-    if ctx.guild.id != GUILD_ID:
-        await ctx.send("This command is not allowed in this server.")
+# ---- SLASH COMMAND: /genkey ----
+@bot.tree.command(name='genkey', description='Generate a license key with expiration')
+@app_commands.describe(duration='Duration: 1d, 3d, 7d, 30d, 1y, perm')
+async def genkey(interaction: discord.Interaction, duration: str = '7d'):
+    # Check guild
+    if interaction.guild.id != GUILD_ID:
+        await interaction.response.send_message("This command is not allowed in this server.", ephemeral=True)
         return
-    if ctx.author.id not in ALLOWED_USERS:
-        await ctx.send("You are not authorized to generate keys.")
+    # Check user permission
+    if interaction.user.id not in ALLOWED_USERS:
+        await interaction.response.send_message("You are not authorized to generate keys.", ephemeral=True)
         return
 
+    # Parse duration
     duration = duration.lower()
     seconds = 0
     if duration.endswith('d'):
@@ -72,24 +77,37 @@ async def genkey(ctx, duration: str = '7d'):
     elif duration == 'perm':
         seconds = 0
     else:
-        await ctx.send("Invalid duration. Use e.g., 1d, 3d, 7d, 30d, 1y, perm")
+        await interaction.response.send_message("❌ Invalid duration. Use: 1d, 3d, 7d, 30d, 1y, perm", ephemeral=True)
         return
 
+    # Generate key
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
     expires = 9999999999 if seconds == 0 else int(time.time()) + seconds
     c.execute('INSERT INTO keys (key, expires) VALUES (?, ?)', (key, expires))
     conn.commit()
 
     dur_str = "permanent" if seconds == 0 else duration
-    await ctx.send(f"✅ Key generated: `{key}` – expires in {dur_str}")
+    await interaction.response.send_message(f"✅ Key generated: `{key}` – expires in {dur_str}")
 
-# ---- RUN BOT AND SERVER ----
+# ---- SYNC COMMANDS ON STARTUP ----
+@bot.event
+async def on_ready():
+    print(f"✅ Bot logged in as {bot.user}")
+    try:
+        # Sync commands to your guild (instant)
+        guild = discord.Object(id=GUILD_ID)
+        await bot.tree.sync(guild=guild)
+        print(f"✅ Slash commands synced to guild {GUILD_ID}")
+    except Exception as e:
+        print(f"❌ Failed to sync commands: {e}")
+
+# ---- RUN BOT AND HTTP SERVER ----
 async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f"HTTP server running on port {PORT}")
+    print(f"🌐 HTTP validation server running on port {PORT}")
     await bot.start(BOT_TOKEN)
 
 if __name__ == '__main__':
