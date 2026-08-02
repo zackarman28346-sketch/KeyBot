@@ -32,9 +32,12 @@ conn.commit()
 # ---- BOT SETUP ----
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)  # prefix for fallback
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 # ---- HTTP SERVER ----
+async def handle_root(request):
+    return web.Response(text="KeyBot is alive! 🔑")
+
 async def handle_validate(request):
     data = await request.json()
     key = data.get('key')
@@ -43,10 +46,14 @@ async def handle_validate(request):
     c.execute('SELECT expires, used FROM keys WHERE key = ?', (key,))
     row = c.fetchone()
     if row and not row[1] and row[0] > int(time.time()):
+        # Uncomment for single-use keys
+        # c.execute('UPDATE keys SET used = 1 WHERE key = ?', (key,))
+        # conn.commit()
         return web.json_response({'valid': True})
     return web.json_response({'valid': False})
 
 app = web.Application()
+app.router.add_get('/', handle_root)           # <-- FIX: root route
 app.router.add_post('/validate', handle_validate)
 
 # ---- SHARED KEY GENERATION LOGIC ----
@@ -110,7 +117,6 @@ async def on_ready():
     print(f"✅ Bot logged in as {bot.user}")
     try:
         guild = discord.Object(id=GUILD_ID)
-        # Clear existing commands first (to avoid duplicate)
         await bot.tree.clear_commands(guild=guild)
         await bot.tree.sync(guild=guild)
         print(f"✅ Slash commands synced to guild {GUILD_ID}")
